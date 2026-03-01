@@ -1,0 +1,9 @@
+services:
+  app-store-scraper-mcp:
+    build: .
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - TRANSPORT=http
+      - PORT=3000
+    restart: unless-stopped
