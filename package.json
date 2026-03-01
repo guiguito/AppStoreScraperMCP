@@ -12,6 +12,7 @@
     "build": "tsc",
     "dev": "tsx watch src/index.ts"
   },
+  "license": "MIT",
   "engines": {
     "node": ">=18"
   },
