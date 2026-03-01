@@ -1,0 +1,31 @@
+{
+  "name": "app-store-scraper-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server exposing Apple App Store and Google Play Store scraping tools",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "app-store-scraper-mcp-server": "dist/index.js"
+  },
+  "scripts": {
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "app-store-scraper-ts": "^0.3.0",
+    "express": "^5.0.0",
+    "google-play-scraper-ts": "^0.3.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^25.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.0"
+  }
+}
