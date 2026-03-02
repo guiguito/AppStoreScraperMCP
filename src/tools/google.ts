@@ -457,7 +457,7 @@ Returns an array of AppSummary objects. Set fullDetail to true to get full AppDe
       description: `Retrieve paginated user reviews for a Google Play Store app.
 
 Returns an object with:
-- data: Array of Review objects, each containing: id, userName, userImage, date, score (1-5), text, replyDate, replyText, version, thumbsUp, url
+- data: Array of Review objects. By default, returns only essential fields: id, userName, date, score, text, version. Set \`fullDetail\` to true to get complete raw Review objects (includes userImage, replyDate, replyText, thumbsUp, url, and all other fields).
 - nextPaginationToken: String token for fetching the next page (null if no more pages)
 
 To paginate, pass the nextPaginationToken from a previous call.`,
@@ -498,6 +498,12 @@ To paginate, pass the nextPaginationToken from a previous call.`,
           .describe(
             "Continuation token from a previous reviews call to fetch the next page"
           ),
+        fullDetail: z
+          .boolean()
+          .default(false)
+          .describe(
+            "When true, returns complete raw Review objects. When false (default), returns only essential fields: id, userName, date, score, text, version."
+          ),
       }),
       annotations: {
         readOnlyHint: true,
@@ -518,6 +524,23 @@ To paginate, pass the nextPaginationToken from a previous call.`,
         if (params.sort) opts.sort = lookupSort(params.sort);
         if (params.nextPaginationToken) opts.nextPaginationToken = params.nextPaginationToken;
         const result = await gplay.reviews(opts);
+        if (!params.fullDetail && result && typeof result === "object") {
+          const res = result as { data?: unknown[]; nextPaginationToken?: string };
+          if (Array.isArray(res.data)) {
+            const filtered = res.data.map((r: unknown) => {
+              const rev = r as Record<string, unknown>;
+              return {
+              id: rev.id,
+              userName: rev.userName,
+              date: rev.date,
+              score: rev.score,
+              text: rev.text,
+              version: rev.version,
+            };
+            });
+            return jsonResult({ data: filtered, nextPaginationToken: res.nextPaginationToken });
+          }
+        }
         return jsonResult(result);
       } catch (error) {
         return errorResult(error);

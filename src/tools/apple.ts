@@ -464,7 +464,7 @@ Provide either \`id\` (numeric) or \`appId\` (bundle identifier). Returns an arr
 
 Provide either \`id\` (numeric) or \`appId\` (bundle identifier).
 
-Returns an array of Review objects, each containing: id, userName, userUrl, version, score (1-5), title, text, url, updated.
+By default, returns a filtered array with essential fields only: id, version, userName, score, title, text, updated. Set \`fullDetail\` to true to get the complete raw Review objects (includes userUrl, url, and all other fields).
 
 Note: Apple limits review pages to 1-10.`,
       inputSchema: z.object({
@@ -493,6 +493,12 @@ Note: Apple limits review pages to 1-10.`,
           .string()
           .default("us")
           .describe("Two-letter ISO country code (default: 'us')"),
+        fullDetail: z
+          .boolean()
+          .default(false)
+          .describe(
+            "When true, returns complete raw Review objects. When false (default), returns only essential fields: id, version, userName, score, title, text, updated."
+          ),
       }),
       annotations: {
         readOnlyHint: true,
@@ -516,6 +522,18 @@ Note: Apple limits review pages to 1-10.`,
         if (params.appId) opts.appId = params.appId;
         if (params.sort) opts.sort = lookupSort(params.sort);
         const result = await reviews(opts);
+        if (!params.fullDetail && Array.isArray(result)) {
+          const filtered = result.map((r: Record<string, unknown>) => ({
+            id: r.id,
+            version: r.version,
+            userName: r.userName,
+            score: r.score,
+            title: r.title,
+            text: r.text,
+            updated: r.updated,
+          }));
+          return jsonResult(filtered);
+        }
         return jsonResult(result);
       } catch (error) {
         return errorResult(error);

@@ -300,8 +300,9 @@ Fetch paginated customer reviews.
 | `sort` | enum | no | `RECENT` | Sort order (see [Apple Sort](#apple-sort-values)) |
 | `page` | number | no | `1` | Page number (1-10, Apple-imposed limit) |
 | `country` | string | no | `"us"` | Two-letter ISO country code |
+| `fullDetail` | boolean | no | `false` | When true, returns complete raw Review objects with all fields |
 
-**Returns:** Array of Review objects with id, userName, userUrl, version, score (1-5), title, text, url, updated.
+**Returns:** By default, an array of filtered Review objects with essential fields: id, version, userName, score, title, text, updated. When `fullDetail` is true, returns complete raw Review objects including userUrl, url, and all other fields.
 
 ---
 
@@ -425,8 +426,9 @@ Retrieve paginated user reviews.
 | `sort` | enum | no | — | Sort order (see [Google Sort](#google-sort-values)) |
 | `paginate` | boolean | no | `false` | Enable pagination (returns `nextPaginationToken`) |
 | `nextPaginationToken` | string | no | — | Token from previous call for next page |
+| `fullDetail` | boolean | no | `false` | When true, returns complete raw Review objects with all fields |
 
-**Returns:** `{ data: Review[], nextPaginationToken: string | null }`. Each Review has id, userName, userImage, date, score (1-5), text, replyDate, replyText, version, thumbsUp, url.
+**Returns:** `{ data: Review[], nextPaginationToken: string | null }`. By default, each Review contains essential fields only: id, userName, date, score, text, version. When `fullDetail` is true, includes all fields: userImage, replyDate, replyText, thumbsUp, url, and more.
 
 ---
 
