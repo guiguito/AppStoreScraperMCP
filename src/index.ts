@@ -7,15 +7,18 @@ import express from "express";
 import { registerAppleTools } from "./tools/apple.js";
 import { registerGoogleTools } from "./tools/google.js";
 
-const server = new McpServer({
-  name: "app-store-scraper-mcp-server",
-  version: "1.0.0",
-});
-
-registerAppleTools(server);
-registerGoogleTools(server);
+function createServer(): McpServer {
+  const server = new McpServer({
+    name: "app-store-scraper-mcp-server",
+    version: "1.0.0",
+  });
+  registerAppleTools(server);
+  registerGoogleTools(server);
+  return server;
+}
 
 async function runStdio() {
+  const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("App Store Scraper MCP server running on stdio");
@@ -26,6 +29,7 @@ async function runHttp() {
   app.use(express.json());
 
   app.post("/mcp", async (req, res) => {
+    const server = createServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
