@@ -1,12 +1,12 @@
 # App Store Scraper MCP Server
 
-An MCP (Model Context Protocol) server that exposes Apple App Store and Google Play Store scraping capabilities as 21 tools. Connect it to any MCP-compatible client (Claude Desktop, Cursor, etc.) to let LLMs search, browse, and analyze mobile apps from both stores.
+An MCP (Model Context Protocol) server that exposes Apple App Store and Google Play Store scraping capabilities as 22 tools. Connect it to any MCP-compatible client (Claude Desktop, Cursor, etc.) to let LLMs search, browse, and analyze mobile apps from both stores.
 
 Built on top of [app-store-scraper-ts](https://www.npmjs.com/package/app-store-scraper-ts) and [google-play-scraper-ts](https://www.npmjs.com/package/google-play-scraper-ts).
 
 ## Features
 
-- **21 read-only tools** covering both Apple App Store (10 tools) and Google Play Store (11 tools)
+- **22 read-only tools** covering both Apple App Store (11 tools) and Google Play Store (11 tools)
 - **Dual transport**: stdio (for local MCP clients) and Streamable HTTP (for remote access)
 - **No authentication required** — all data is publicly available on the stores
 - **Docker-ready** with a multi-stage production build
@@ -16,7 +16,7 @@ Built on top of [app-store-scraper-ts](https://www.npmjs.com/package/app-store-s
 
 ### Prerequisites
 
-- Node.js >= 18
+- Node.js >= 20.18.1
 
 ### Install & Build
 
@@ -41,7 +41,11 @@ node dist/index.js --http
 TRANSPORT=http npm start
 ```
 
-The HTTP server listens on `http://localhost:3000/mcp` by default. Set the `PORT` environment variable to change it:
+The HTTP server listens on `http://127.0.0.1:3000/mcp` by default and rejects requests whose `Host`/`Origin` is not localhost (DNS rebinding protection). Environment variables:
+
+- `PORT` — listen port (default `3000`)
+- `HOST` — bind address (default `127.0.0.1`; the Docker image sets `0.0.0.0`, which turns off the localhost-only check)
+- `ALLOWED_HOSTS` — comma-separated hostnames to accept when exposed on a network (e.g. `mcp.example.com`)
 
 ```bash
 PORT=8080 node dist/index.js --http
@@ -173,13 +177,13 @@ docker build -t app-store-scraper-mcp .
 ### Run
 
 ```bash
-docker run -p 3000:3000 app-store-scraper-mcp
+docker run --init -p 3000:3000 app-store-scraper-mcp
 ```
 
 Custom port:
 
 ```bash
-docker run -p 8080:8080 -e PORT=8080 app-store-scraper-mcp
+docker run --init -p 8080:8080 -e PORT=8080 app-store-scraper-mcp
 ```
 
 The Docker image runs in HTTP transport mode by default.
@@ -203,6 +207,8 @@ Retrieve detailed information for a single app.
 | `country` | string | no | `"us"` | Two-letter ISO country code |
 | `lang` | string | no | — | IETF language tag (e.g. `"en-us"`, `"fr-fr"`) |
 | `ratings` | boolean | no | — | Include total ratings count and star histogram |
+| `subtitle` | boolean | no | — | Add the App Store subtitle (short tagline) |
+| `inAppPurchases` | boolean | no | — | Add the top in-app purchases (see [`apple_in_app_purchases`](#apple_in_app_purchases)) |
 
 **Returns:** Full App object with title, description, icon, screenshots, price, score, ratings, version, release notes, developer info, genres, content rating, supported devices, and more.
 
@@ -228,11 +234,12 @@ Browse ranked app collections (top free, top paid, new, grossing, etc.).
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `collection` | enum | no | — | Collection key (see [Apple Collections](#apple-collections)) |
-| `category` | string | no | — | Category key (see [Apple Categories](#apple-categories)) |
+| `category` | enum | no | — | Category key (see [Apple Categories](#apple-categories)) |
 | `country` | string | no | `"us"` | Two-letter ISO country code |
 | `lang` | string | no | — | IETF language tag |
 | `num` | number | no | `50` | Number of results (1-200) |
 | `fullDetail` | boolean | no | — | Return full App objects instead of lightweight AppLite |
+| `subtitle` | boolean | no | — | With `fullDetail` only: add each app's App Store subtitle |
 
 ---
 
@@ -247,7 +254,11 @@ Search apps by keyword.
 | `page` | number | no | `1` | Page number (1-based) |
 | `country` | string | no | `"us"` | Two-letter ISO country code |
 | `lang` | string | no | `"en-us"` | Accept-Language header value |
-| `idsOnly` | boolean | no | — | Return only app IDs instead of full objects |
+| `idsOnly` | boolean | no | — | Return only app IDs |
+| `fullDetail` | boolean | no | `false` | Return full App objects (~12 KB each) instead of compact cards |
+| `subtitle` | boolean | no | — | Add each app's App Store subtitle (one extra request per 99 apps) |
+
+**Returns:** Compact app cards: id, appId, title, subtitle, url, icon, developer, developerId, genre, price, currency, free, score, reviews.
 
 ---
 
@@ -260,6 +271,10 @@ List all apps by a specific developer.
 | `devId` | string | yes | — | Apple developer ID (e.g. `"284882218"` for Facebook) |
 | `country` | string | no | `"us"` | Two-letter ISO country code |
 | `lang` | string | no | — | IETF language tag |
+| `fullDetail` | boolean | no | `false` | Return full App objects (~12 KB each) instead of compact cards |
+| `subtitle` | boolean | no | — | Add each app's App Store subtitle (one extra request per 99 apps) |
+
+**Returns:** Compact app cards: id, appId, title, subtitle, url, icon, developer, developerId, genre, price, currency, free, score, reviews.
 
 ---
 
@@ -284,8 +299,12 @@ Get "Customers Also Bought" related apps.
 |-----------|------|----------|---------|-------------|
 | `id` | string | one of id/appId | — | Numeric App Store ID |
 | `appId` | string | one of id/appId | — | Bundle identifier |
-| `country` | string | no | — | Two-letter ISO country code |
+| `country` | string | no | `"us"` | Two-letter ISO country code |
 | `lang` | string | no | — | IETF language tag |
+| `fullDetail` | boolean | no | `false` | Return full App objects (~12 KB each) instead of compact cards |
+| `subtitle` | boolean | no | — | Add each app's App Store subtitle (one extra request per 99 apps) |
+
+**Returns:** Compact app cards: id, appId, title, subtitle, url, icon, developer, developerId, genre, price, currency, free, score, reviews.
 
 ---
 
@@ -302,7 +321,7 @@ Fetch paginated customer reviews.
 | `country` | string | no | `"us"` | Two-letter ISO country code |
 | `fullDetail` | boolean | no | `false` | When true, returns complete raw Review objects with all fields |
 
-**Returns:** By default, an array of filtered Review objects with essential fields: id, version, userName, score, title, text, updated. When `fullDetail` is true, returns complete raw Review objects including userUrl, url, and all other fields.
+**Returns:** By default, an array of filtered Review objects with essential fields: id, version, userName, score, title, text, updated. When `fullDetail` is true, returns complete raw Review objects including userUrl, url, voteSum and voteCount.
 
 ---
 
@@ -313,9 +332,9 @@ Get App Privacy / App Tracking Transparency details.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `id` | string | yes | — | Numeric App Store ID |
-| `country` | string | no | `"US"` | Upper-case ISO country code |
+| `country` | string | no | `"us"` | Two-letter ISO country code |
 
-**Returns:** PrivacyDetails object with managePrivacyChoicesUrl, privacyTypes array (dataCategories, purposes).
+**Returns:** PrivacyDetails object with managePrivacyChoicesUrl, privacyPolicyUrl, privacyTypes array (dataCategories, purposes).
 
 ---
 
@@ -326,9 +345,22 @@ Fetch version release history with release notes.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `id` | string | yes | — | Numeric App Store ID |
-| `country` | string | no | `"US"` | Upper-case ISO country code |
+| `country` | string | no | `"us"` | Two-letter ISO country code |
 
 **Returns:** Array of `{ versionDisplay, releaseNotes, releaseDate, releaseTimestamp }`.
+
+---
+
+#### `apple_in_app_purchases`
+
+List an app's top in-app purchases (up to 10, as shown on its App Store page), priced in the storefront's currency.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `id` | string | yes | — | Numeric App Store ID |
+| `country` | string | no | `"us"` | Two-letter ISO country code (sets currency and language) |
+
+**Returns:** Array (empty when there are none) of `{ id, productId, title, description, price, currency, formattedPrice, subscription, subscriptionPeriod }`; `subscriptionPeriod` is an ISO 8601 duration (`P1W`, `P1M`, `P1Y`) for subscriptions.
 
 ---
 
@@ -355,12 +387,12 @@ Browse curated app charts (top free, top paid, grossing).
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `collection` | enum | no | — | Chart identifier (see [Google Collections](#google-collections)) |
-| `category` | string | no | — | Category key (see [Google Categories](#google-categories)) |
+| `category` | enum | no | — | Category key (see [Google Categories](#google-categories)) |
 | `age` | enum | no | — | Age range filter (see [Google Age Ranges](#google-age-ranges)) |
 | `lang` | string | no | `"en"` | Metadata locale |
 | `country` | string | no | `"us"` | Storefront region |
 | `num` | number | no | `60` | Max entries (1-500) |
-| `fullDetail` | boolean | no | `false` | Fetch full AppDetails per entry (slower) |
+| `fullDetail` | boolean | no | `false` | Fetch full AppDetails per entry (slower). Without it, cards omit `descriptionHTML` |
 
 ---
 
@@ -373,15 +405,9 @@ Search the Google Play catalogue by keyword.
 | `term` | string | yes | — | Search query |
 | `lang` | string | no | `"en"` | Metadata language |
 | `country` | string | no | `"us"` | Storefront country |
-| `num` | number | no | `20` | Requested results (max ~250, Google caps at ~60) |
-| `fullDetail` | boolean | no | `false` | Fetch full AppDetails per result |
+| `num` | number | no | `20` | Max results, 1-250 (most queries stop at ~20-30) |
+| `fullDetail` | boolean | no | `false` | Fetch full AppDetails per result. Without it, cards omit `descriptionHTML` |
 | `price` | enum | no | `"all"` | Price filter: `"all"`, `"free"`, or `"paid"` |
-
----
-
-#### `google_search_global`
-
-Legacy global feed search via `/work/search` endpoint. Returns geo-neutral results. Same parameters as `google_search`.
 
 ---
 
@@ -409,7 +435,7 @@ List apps published by a specific developer.
 | `lang` | string | no | `"en"` | Metadata locale |
 | `country` | string | no | `"us"` | Storefront country |
 | `num` | number | no | `20` | Max results (1-250) |
-| `fullDetail` | boolean | no | `false` | Fetch full AppDetails per app |
+| `fullDetail` | boolean | no | `false` | Fetch full AppDetails per app. Without it, cards omit `descriptionHTML` |
 
 ---
 
@@ -424,6 +450,8 @@ Retrieve paginated user reviews.
 | `country` | string | no | `"us"` | Store country |
 | `num` | number | no | `20` | Results per batch (1-250) |
 | `sort` | enum | no | — | Sort order (see [Google Sort](#google-sort-values)) |
+| `score` | number | no | — | Only reviews with this star rating (1-5) |
+| `device` | enum | no | — | Only reviews written on this form factor (see [Google Devices](#google-devices)) |
 | `paginate` | boolean | no | `false` | Enable pagination (returns `nextPaginationToken`) |
 | `nextPaginationToken` | string | no | — | Token from previous call for next page |
 | `fullDetail` | boolean | no | `false` | When true, returns complete raw Review objects with all fields |
@@ -442,7 +470,7 @@ Get "Similar apps" for a given app.
 | `lang` | string | no | `"en"` | Metadata language |
 | `country` | string | no | `"us"` | Storefront region |
 | `num` | number | no | `20` | Max results (1-100) |
-| `fullDetail` | boolean | no | `false` | Fetch full AppDetails per app |
+| `fullDetail` | boolean | no | `false` | Fetch full AppDetails per app. Without it, cards omit `descriptionHTML` |
 
 ---
 
@@ -455,9 +483,9 @@ Inspect runtime permissions requested by an app.
 | `appId` | string | yes | — | Package identifier |
 | `lang` | string | no | `"en"` | UI language |
 | `country` | string | no | `"us"` | Store country |
-| `shortOnly` | boolean | no | `false` | Return only permission name strings |
+| `shortOnly` | boolean | no | `false` | Return only permission strings |
 
-**Returns:** Array of `{ permission, type }` objects (or flat string array when `shortOnly` is true).
+**Returns:** Array of `{ permission, type }` objects, where `type` is Play's group label (e.g. `"Location"`), or a flat string array when `shortOnly` is true.
 
 ---
 
@@ -483,6 +511,20 @@ List all available Google Play category identifiers. Takes no parameters.
 
 ---
 
+#### `google_availability`
+
+Check in which storefronts an app is offered. Reads the listing's own availability flag (Play answers 200 even where an app isn't published); an unknown or removed app counts as unavailable. One request per country.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `appId` | string | yes | — | Package identifier |
+| `countries` | string[] | yes | — | Two-letter country codes to check (1-200) |
+| `lang` | string | no | `"en"` | UI language |
+
+**Returns:** Object keyed by lowercased country code, e.g. `{ "us": true, "fr": false }`.
+
+---
+
 ## Enum Reference
 
 ### Apple Collections
@@ -491,14 +533,19 @@ Pass the key name as the `collection` parameter:
 
 | Key | Description |
 |-----|-------------|
-| `TOP_FREE_IOS` | Top Free iPhone Apps |
+| `TOP_FREE_IOS` | Top Free iPhone Apps (default) |
 | `TOP_FREE_IPAD` | Top Free iPad Apps |
 | `TOP_PAID_IOS` | Top Paid iPhone Apps |
 | `TOP_PAID_IPAD` | Top Paid iPad Apps |
 | `TOP_GROSSING_IOS` | Top Grossing iPhone Apps |
 | `TOP_GROSSING_IPAD` | Top Grossing iPad Apps |
 | `NEW_IOS` | New iPhone Apps |
-| `NEW_IPAD` | New iPad Apps |
+| `NEW_FREE_IOS` | New Free iPhone Apps |
+| `NEW_PAID_IOS` | New Paid iPhone Apps |
+| `TOP_MAC` | Top Mac Apps |
+| `TOP_FREE_MAC` | Top Free Mac Apps |
+| `TOP_PAID_MAC` | Top Paid Mac Apps |
+| `TOP_GROSSING_MAC` | Top Grossing Mac Apps |
 
 ### Apple Sort Values
 
@@ -531,6 +578,16 @@ Pass the key name as the `category` parameter:
 | `RATING` | Highest rated first |
 | `HELPFULNESS` | Most helpful first |
 
+### Google Devices
+
+| Key | Description |
+|-----|-------------|
+| `MOBILE` | Phone |
+| `TABLET` | Tablet |
+| `WATCH` | Wear OS watch |
+| `CHROMEBOOK` | Chromebook |
+| `TV` | Android TV |
+
 ### Google Age Ranges
 
 | Key | Description |
@@ -547,7 +604,7 @@ Pass the key name as the `category` parameter:
 
 **Specialized:** `AUTO_AND_VEHICLES`, `BEAUTY`, `DATING`, `EVENTS`, `FINANCE`, `FOOD_AND_DRINK`, `HEALTH_AND_FITNESS`, `HOUSE_AND_HOME`, `LIBRARIES_AND_DEMO`, `MAPS_AND_NAVIGATION`, `MEDICAL`, `PARENTING`, `PERSONALIZATION`, `SPORTS`, `TRAVEL_AND_LOCAL`, `WATCH_FACE`, `FAMILY`
 
-**Games:** `GAME_ACTION`, `GAME_ADVENTURE`, `GAME_ARCADE`, `GAME_BOARD`, `GAME_CARD`, `GAME_CASINO`, `GAME_CASUAL`, `GAME_EDUCATIONAL`, `GAME_MUSIC`, `GAME_PUZZLE`, `GAME_RACING`, `GAME_ROLE_PLAYING`, `GAME_SIMULATION`, `GAME_SPORTS`, `GAME_STRATEGY`, `GAME_TRIVIA`, `GAME_WORD`
+**Games:** `GAME`, `GAME_ACTION`, `GAME_ADVENTURE`, `GAME_ARCADE`, `GAME_BOARD`, `GAME_CARD`, `GAME_CASINO`, `GAME_CASUAL`, `GAME_EDUCATIONAL`, `GAME_MUSIC`, `GAME_PUZZLE`, `GAME_RACING`, `GAME_ROLE_PLAYING`, `GAME_SIMULATION`, `GAME_SPORTS`, `GAME_STRATEGY`, `GAME_TRIVIA`, `GAME_WORD`
 
 Use `google_categories` tool at runtime for the full dynamic list.
 
@@ -556,9 +613,9 @@ Use `google_categories` tool at runtime for the full dynamic list.
 ```
 src/
   index.ts          # Entry point, transport selection, Express HTTP server
-  utils.ts          # Shared response helpers (jsonResult, errorResult)
+  utils.ts          # Shared helpers (jsonResult, keysOf, READ_ONLY)
   tools/
-    apple.ts        # 10 Apple App Store tools
+    apple.ts        # 11 Apple App Store tools
     google.ts       # 11 Google Play Store tools
 Dockerfile          # Multi-stage production build
 tsconfig.json       # TypeScript configuration

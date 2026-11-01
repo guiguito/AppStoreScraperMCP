@@ -5,5 +5,7 @@ services:
       - "${PORT:-3000}:3000"
     environment:
       - TRANSPORT=http
+      - HOST=0.0.0.0
       - PORT=3000
+    init: true # PID 1 is a tiny init, so docker stop's SIGTERM reaches node instead of timing out after 10s
     restart: unless-stopped

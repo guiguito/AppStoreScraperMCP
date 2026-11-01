@@ -1,81 +1,36 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { createRequire } from "node:module";
-import { jsonResult, errorResult } from "../utils.js";
+import { memoized, constants, type App } from "app-store-scraper-ts";
+import { jsonResult, keysOf, READ_ONLY } from "../utils.js";
 
-const require = createRequire(import.meta.url);
+// Module-level, so the cache outlives the per-request McpServer: identical calls within 5 min hit memory, failures aren't cached.
+// ponytail: library defaults (5 min, 1000 entries per method); pass { maxAge, max } if memory or freshness matters.
+const { app, ratings, list, search, developer, suggest, similar, reviews, privacy, versionHistory, inAppPurchases } =
+  memoized();
+const { collection, sort, category } = constants;
 
-interface AppleStore {
-  app: (opts: Record<string, unknown>) => Promise<unknown>;
-  ratings: (opts: Record<string, unknown>) => Promise<unknown>;
-  list: (opts?: Record<string, unknown>) => Promise<unknown>;
-  search: (opts: Record<string, unknown>) => Promise<unknown>;
-  developer: (opts: Record<string, unknown>) => Promise<unknown>;
-  suggest: (opts: Record<string, unknown>) => Promise<unknown>;
-  similar: (opts: Record<string, unknown>) => Promise<unknown>;
-  reviews: (opts: Record<string, unknown>) => Promise<unknown>;
-  privacy: (opts: Record<string, unknown>) => Promise<unknown>;
-  versionHistory: (opts: Record<string, unknown>) => Promise<unknown>;
-  constants: {
-    collection: Record<string, string>;
-    sort: Record<string, string>;
-    category: Record<string, number>;
-  };
+const country = z.string().default("us").describe("Two-letter ISO country code (default: 'us')");
+const subtitle = z
+  .boolean()
+  .optional()
+  .describe("When true, adds each app's App Store subtitle (its short tagline): one extra request per 99 apps");
+const fullDetail = z
+  .boolean()
+  .default(false)
+  .describe("When true, returns full App objects (~12 KB each: description, screenshots, release notes…). Default false: compact cards");
+
+// A full App is ~12 KB, mostly description and screenshot URLs; a card is enough to pick one, then call apple_app.
+// Partial<App> also takes list's AppLite, which has no score/reviews/subtitle (Apple's charts feed doesn't carry them).
+function appCard({ id, appId, title, subtitle, url, icon, developer, developerId, genre, price, currency, free, score, reviews }: Partial<App>) {
+  return { id, appId, title, subtitle, url, icon, developer, developerId, genre, price, currency, free, score, reviews };
 }
+const CARD_FIELDS = "id, appId, title, subtitle, url, icon, developer, developerId, genre, price, currency, free, score, reviews";
 
-const appleStore: AppleStore = require("app-store-scraper-ts");
-const { app, ratings, list, search, developer, suggest, similar, reviews, privacy, versionHistory } = appleStore;
-const appleCollection = appleStore.constants.collection;
-const appleSort = appleStore.constants.sort;
-const appleCategory = appleStore.constants.category;
-
-// --- Constants ---
-
-const APPLE_COLLECTIONS = Object.keys(appleCollection) as [string, ...string[]];
-const APPLE_SORT = Object.keys(appleSort) as [string, ...string[]];
-
-const APPLE_CATEGORIES_DESC = `Valid Apple App Store category names (pass the key name, e.g. "GAMES"):
-Top-level: GAMES, BUSINESS, EDUCATION, ENTERTAINMENT, FINANCE, FOOD_AND_DRINK, HEALTH_AND_FITNESS, LIFESTYLE, MEDICAL, MUSIC, NAVIGATION, NEWS, PHOTO_AND_VIDEO, PRODUCTIVITY, REFERENCE, SHOPPING, SOCIAL_NETWORKING, SPORTS, TRAVEL, UTILITIES, WEATHER, BOOKS, CATALOGS.
-Game subcategories: GAMES_ACTION, GAMES_ADVENTURE, GAMES_ARCADE, GAMES_BOARD, GAMES_CARD, GAMES_CASINO, GAMES_DICE, GAMES_EDUCATIONAL, GAMES_FAMILY, GAMES_MUSIC, GAMES_PUZZLE, GAMES_RACING, GAMES_ROLE_PLAYING, GAMES_SIMULATION, GAMES_SPORTS, GAMES_STRATEGY, GAMES_TRIVIA, GAMES_WORD.
-Magazine subcategories also available (MAGAZINES_*).`;
-
-// --- Helpers ---
-
-function lookupCollection(key: string): string {
-  const val = (appleCollection as Record<string, string>)[key];
-  if (val === undefined) {
-    throw new Error(
-      `Invalid collection "${key}". Valid values: ${APPLE_COLLECTIONS.join(", ")}`
-    );
-  }
-  return val;
+function requireIdOrAppId(params: { id?: string; appId?: string }): void {
+  if (!params.id && !params.appId) throw new Error("Either 'id' or 'appId' must be provided");
 }
-
-function lookupSort(key: string): string {
-  const val = (appleSort as Record<string, string>)[key];
-  if (val === undefined) {
-    throw new Error(
-      `Invalid sort "${key}". Valid values: ${APPLE_SORT.join(", ")}`
-    );
-  }
-  return val;
-}
-
-function lookupCategory(key: string): number {
-  const val = (appleCategory as Record<string, number>)[key];
-  if (val === undefined) {
-    const validKeys = Object.keys(appleCategory).join(", ");
-    throw new Error(
-      `Invalid category "${key}". Valid values: ${validKeys}`
-    );
-  }
-  return val;
-}
-
-// --- Tool registration ---
 
 export function registerAppleTools(server: McpServer): void {
-  // 1. apple_app
   server.registerTool(
     "apple_app",
     {
@@ -86,63 +41,33 @@ Provide either \`id\` (numeric App Store ID, e.g. "553834731") or \`appId\` (bun
 
 Returns a detailed App object including: title, description, icon, screenshots, price, currency, score, ratings, reviews count, version, release notes, developer info, genres, content rating, supported devices, and more.
 
-Set \`ratings\` to true to include the star histogram (1-5 distribution) in the response.`,
+Set \`ratings\` to true to include the star histogram (1-5 distribution), \`subtitle\` to add the App Store tagline, and \`inAppPurchases\` to add the top in-app purchases (same data as apple_in_app_purchases).`,
       inputSchema: z.object({
-        id: z
-          .string()
-          .optional()
-          .describe(
-            "Numeric App Store ID (e.g. '553834731'). Provide this or appId."
-          ),
+        id: z.string().optional().describe("Numeric App Store ID (e.g. '553834731'). Provide this or appId."),
         appId: z
           .string()
           .optional()
-          .describe(
-            "Bundle identifier (e.g. 'com.midasplayer.apps.candycrushsaga'). Provide this or id."
-          ),
-        country: z
-          .string()
-          .default("us")
-          .describe("Two-letter ISO country code (default: 'us')"),
-        lang: z
-          .string()
-          .optional()
-          .describe("IETF language tag (e.g. 'en-us', 'fr-fr')"),
+          .describe("Bundle identifier (e.g. 'com.midasplayer.apps.candycrushsaga'). Provide this or id."),
+        country,
+        lang: z.string().optional().describe("IETF language tag (e.g. 'en-us', 'fr-fr')"),
         ratings: z
           .boolean()
           .optional()
-          .describe(
-            "When true, includes total ratings count and star histogram in the result"
-          ),
+          .describe("When true, includes total ratings count and star histogram in the result"),
+        subtitle,
+        inAppPurchases: z
+          .boolean()
+          .optional()
+          .describe("When true, adds the app's top in-app purchases (one extra request; the call fails if it fails)"),
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
     async (params) => {
-      try {
-        if (!params.id && !params.appId) {
-          return errorResult(
-            new Error("Either 'id' or 'appId' must be provided")
-          );
-        }
-        const opts: Record<string, unknown> = { country: params.country };
-        if (params.id) opts.id = params.id;
-        if (params.appId) opts.appId = params.appId;
-        if (params.lang) opts.lang = params.lang;
-        if (params.ratings !== undefined) opts.ratings = params.ratings;
-        const result = await app(opts);
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
+      requireIdOrAppId(params);
+      return jsonResult(await app(params));
     }
   );
 
-  // 2. apple_ratings
   server.registerTool(
     "apple_ratings",
     {
@@ -153,216 +78,93 @@ Returns an object with:
 - ratings (number): Total number of ratings
 - histogram (object): Star distribution, e.g. { "1": 100, "2": 200, "3": 500, "4": 2000, "5": 9545 }`,
       inputSchema: z.object({
-        id: z
-          .string()
-          .describe("Numeric App Store ID (e.g. '553834731')"),
-        country: z
-          .string()
-          .default("us")
-          .describe("Two-letter ISO country code (default: 'us')"),
+        id: z.string().describe("Numeric App Store ID (e.g. '553834731')"),
+        country,
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
-    async (params) => {
-      try {
-        const result = await ratings({
-          id: params.id,
-          country: params.country,
-        });
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
-    }
+    async (params) => jsonResult(await ratings(params))
   );
 
-  // 3. apple_list
   server.registerTool(
     "apple_list",
     {
       title: "List Apple App Store Apps",
       description: `Retrieve ranked app collections from the Apple App Store (top free, top paid, new, grossing, etc.).
 
-Returns an array of app objects. When fullDetail is false (default), returns lightweight AppLite objects (id, title, icon, price, developer). When true, returns full App objects with all details.
-
-${APPLE_CATEGORIES_DESC}`,
+Returns an array of compact app cards (${CARD_FIELDS}; score and reviews only with fullDetail, as the charts feed lacks them). Set fullDetail to true for full App objects.`,
       inputSchema: z.object({
-        collection: z
-          .enum(APPLE_COLLECTIONS)
-          .optional()
-          .describe(
-            `App Store collection to browse. Valid values: ${APPLE_COLLECTIONS.join(", ")}`
-          ),
-        category: z
-          .string()
-          .optional()
-          .describe(
-            "Category filter key name (e.g. 'GAMES', 'BUSINESS'). See tool description for full list."
-          ),
-        country: z
-          .string()
-          .default("us")
-          .describe("Two-letter ISO country code (default: 'us')"),
-        lang: z
-          .string()
-          .optional()
-          .describe("IETF language tag (e.g. 'en-us')"),
-        num: z
-          .number()
-          .int()
-          .min(1)
-          .max(200)
-          .default(50)
-          .describe("Number of results to return (1-200, default: 50)"),
-        fullDetail: z
-          .boolean()
-          .optional()
-          .describe(
-            "When true, returns full App objects instead of lightweight AppLite objects"
-          ),
+        collection: z.enum(keysOf(collection)).optional().describe("App Store collection to browse (default: TOP_FREE_IOS)"),
+        category: z.enum(keysOf(category)).optional().describe("Category filter (e.g. 'GAMES', 'BUSINESS')"),
+        country,
+        lang: z.string().optional().describe("IETF language tag (e.g. 'en-us')"),
+        num: z.number().int().min(1).max(200).default(50).describe("Number of results to return (1-200, default: 50)"),
+        fullDetail,
+        subtitle: subtitle.describe("With fullDetail only: adds each app's App Store subtitle (one extra request per 99 apps)"),
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
     async (params) => {
-      try {
-        const opts: Record<string, unknown> = {
-          country: params.country,
-          num: params.num,
-        };
-        if (params.collection) opts.collection = lookupCollection(params.collection);
-        if (params.category) opts.category = lookupCategory(params.category);
-        if (params.lang) opts.lang = params.lang;
-        if (params.fullDetail !== undefined) opts.fullDetail = params.fullDetail;
-        const result = await list(opts);
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
+      const result = await list({
+        ...params,
+        collection: params.collection && collection[params.collection],
+        category: params.category && category[params.category],
+      });
+      return jsonResult(params.fullDetail ? result : result.map(appCard));
     }
   );
 
-  // 4. apple_search
   server.registerTool(
     "apple_search",
     {
       title: "Search Apple App Store",
       description: `Search for apps on the Apple App Store by keyword.
 
-Returns an array of App objects matching the search term. Each App includes: id, appId, title, url, icon, description, developer, price, score, and more.
-
-Set idsOnly to true to return only app IDs instead of full objects (faster).`,
+Returns an array of compact app cards (${CARD_FIELDS}). Set fullDetail to true for full App objects, or idsOnly to true for just the app IDs.`,
       inputSchema: z.object({
-        term: z
-          .string()
-          .min(1)
-          .describe("Search query (e.g. 'weather app', 'fitness tracker')"),
-        num: z
-          .number()
-          .int()
-          .min(1)
-          .max(200)
-          .default(50)
-          .describe("Number of results per page (default: 50)"),
-        page: z
-          .number()
-          .int()
-          .min(1)
-          .default(1)
-          .describe("Page number, 1-based (default: 1)"),
-        country: z
-          .string()
-          .default("us")
-          .describe("Two-letter ISO country code (default: 'us')"),
-        lang: z
-          .string()
-          .default("en-us")
-          .describe("Accept-Language header value (default: 'en-us')"),
+        term: z.string().min(1).describe("Search query (e.g. 'weather app', 'fitness tracker')"),
+        num: z.number().int().min(1).max(200).default(50).describe("Number of results per page (default: 50)"),
+        page: z.number().int().min(1).default(1).describe("Page number, 1-based (default: 1)"),
+        country,
+        lang: z.string().default("en-us").describe("Accept-Language header value (default: 'en-us')"),
         idsOnly: z
           .boolean()
           .optional()
-          .describe(
-            "When true, returns only an array of app IDs instead of full app objects"
-          ),
+          .describe("When true, returns only an array of app IDs instead of app objects"),
+        fullDetail,
+        subtitle,
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
-    async (params) => {
-      try {
-        const result = await search({
-          term: params.term,
-          num: params.num,
-          page: params.page,
-          country: params.country,
-          lang: params.lang,
-          ...(params.idsOnly !== undefined ? { idsOnly: params.idsOnly } : {}),
-        });
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
+    async ({ fullDetail, ...params }) => {
+      const result = await search(params);
+      if (fullDetail || params.idsOnly) return jsonResult(result);
+      return jsonResult((result as App[]).map(appCard));
     }
   );
 
-  // 5. apple_developer
   server.registerTool(
     "apple_developer",
     {
       title: "List Apps by Apple Developer",
       description: `List all apps published by a specific Apple developer.
 
-Returns an array of App objects for all apps by the given developer ID.`,
+Returns an array of compact app cards (${CARD_FIELDS}) for all apps by the given developer ID. Set fullDetail to true for full App objects.`,
       inputSchema: z.object({
-        devId: z
-          .string()
-          .describe(
-            "Apple developer ID (numeric string, e.g. '284882218' for Facebook)"
-          ),
-        country: z
-          .string()
-          .default("us")
-          .describe("Two-letter ISO country code (default: 'us')"),
-        lang: z
-          .string()
-          .optional()
-          .describe("IETF language tag"),
+        devId: z.string().describe("Apple developer ID (numeric string, e.g. '284882218' for Facebook)"),
+        country,
+        lang: z.string().optional().describe("IETF language tag"),
+        fullDetail,
+        subtitle,
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
-    async (params) => {
-      try {
-        const result = await developer({
-          devId: params.devId,
-          country: params.country,
-          ...(params.lang ? { lang: params.lang } : {}),
-        });
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
+    async ({ fullDetail, ...params }) => {
+      const result = await developer(params);
+      return jsonResult(fullDetail ? result : result.map(appCard));
     }
   );
 
-  // 6. apple_suggest
   server.registerTool(
     "apple_suggest",
     {
@@ -373,89 +175,38 @@ Returns an array of suggestion objects, each with a "term" field. Useful for bui
 
 Example: suggest({ term: "pan" }) might return [{ term: "pandora" }, { term: "panda" }, ...]`,
       inputSchema: z.object({
-        term: z
-          .string()
-          .min(1)
-          .describe("Partial search query to get suggestions for"),
-        country: z
-          .string()
-          .default("us")
-          .describe("Two-letter ISO country code (default: 'us')"),
+        term: z.string().min(1).describe("Partial search query to get suggestions for"),
+        country,
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
-    async (params) => {
-      try {
-        const result = await suggest({
-          term: params.term,
-          country: params.country,
-        });
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
-    }
+    async (params) => jsonResult(await suggest(params))
   );
 
-  // 7. apple_similar
   server.registerTool(
     "apple_similar",
     {
       title: "Get Similar Apple App Store Apps",
       description: `Retrieve "Customers Also Bought" related apps for a given Apple App Store app.
 
-Provide either \`id\` (numeric) or \`appId\` (bundle identifier). Returns an array of App objects (may be empty if no similar apps are found).`,
+Provide either \`id\` (numeric) or \`appId\` (bundle identifier). Returns an array of compact app cards (${CARD_FIELDS}), possibly empty. Set fullDetail to true for full App objects.`,
       inputSchema: z.object({
-        id: z
-          .string()
-          .optional()
-          .describe("Numeric App Store ID. Provide this or appId."),
-        appId: z
-          .string()
-          .optional()
-          .describe("Bundle identifier. Provide this or id."),
-        country: z
-          .string()
-          .optional()
-          .describe("Two-letter ISO country code"),
-        lang: z
-          .string()
-          .optional()
-          .describe("IETF language tag"),
+        id: z.string().optional().describe("Numeric App Store ID. Provide this or appId."),
+        appId: z.string().optional().describe("Bundle identifier. Provide this or id."),
+        country,
+        lang: z.string().optional().describe("IETF language tag"),
+        fullDetail,
+        subtitle,
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
-    async (params) => {
-      try {
-        if (!params.id && !params.appId) {
-          return errorResult(
-            new Error("Either 'id' or 'appId' must be provided")
-          );
-        }
-        const opts: Record<string, unknown> = {};
-        if (params.id) opts.id = params.id;
-        if (params.appId) opts.appId = params.appId;
-        if (params.country) opts.country = params.country;
-        if (params.lang) opts.lang = params.lang;
-        const result = await similar(opts);
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
+    async ({ fullDetail, ...params }) => {
+      requireIdOrAppId(params);
+      const result = await similar(params);
+      return jsonResult(fullDetail ? result : result.map(appCard));
     }
   );
 
-  // 8. apple_reviews
   server.registerTool(
     "apple_reviews",
     {
@@ -464,35 +215,15 @@ Provide either \`id\` (numeric) or \`appId\` (bundle identifier). Returns an arr
 
 Provide either \`id\` (numeric) or \`appId\` (bundle identifier).
 
-By default, returns a filtered array with essential fields only: id, version, userName, score, title, text, updated. Set \`fullDetail\` to true to get the complete raw Review objects (includes userUrl, url, and all other fields).
+By default, returns a filtered array with essential fields only: id, version, userName, score, title, text, updated. Set \`fullDetail\` to true to get the complete raw Review objects (adds userUrl, url, voteSum, voteCount).
 
 Note: Apple limits review pages to 1-10.`,
       inputSchema: z.object({
-        id: z
-          .string()
-          .optional()
-          .describe("Numeric App Store ID. Provide this or appId."),
-        appId: z
-          .string()
-          .optional()
-          .describe("Bundle identifier. Provide this or id."),
-        sort: z
-          .enum(APPLE_SORT)
-          .optional()
-          .describe(
-            `Sort order for reviews. Valid values: ${APPLE_SORT.join(", ")} (default: RECENT)`
-          ),
-        page: z
-          .number()
-          .int()
-          .min(1)
-          .max(10)
-          .default(1)
-          .describe("Page number, 1-10 (Apple-imposed limit, default: 1)"),
-        country: z
-          .string()
-          .default("us")
-          .describe("Two-letter ISO country code (default: 'us')"),
+        id: z.string().optional().describe("Numeric App Store ID. Provide this or appId."),
+        appId: z.string().optional().describe("Bundle identifier. Provide this or id."),
+        sort: z.enum(keysOf(sort)).optional().describe("Sort order for reviews (default: RECENT)"),
+        page: z.number().int().min(1).max(10).default(1).describe("Page number, 1-10 (Apple-imposed limit, default: 1)"),
+        country,
         fullDetail: z
           .boolean()
           .default(false)
@@ -500,48 +231,26 @@ Note: Apple limits review pages to 1-10.`,
             "When true, returns complete raw Review objects. When false (default), returns only essential fields: id, version, userName, score, title, text, updated."
           ),
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
-    async (params) => {
-      try {
-        if (!params.id && !params.appId) {
-          return errorResult(
-            new Error("Either 'id' or 'appId' must be provided")
-          );
-        }
-        const opts: Record<string, unknown> = {
-          page: params.page,
-          country: params.country,
-        };
-        if (params.id) opts.id = params.id;
-        if (params.appId) opts.appId = params.appId;
-        if (params.sort) opts.sort = lookupSort(params.sort);
-        const result = await reviews(opts);
-        if (!params.fullDetail && Array.isArray(result)) {
-          const filtered = result.map((r: Record<string, unknown>) => ({
-            id: r.id,
-            version: r.version,
-            userName: r.userName,
-            score: r.score,
-            title: r.title,
-            text: r.text,
-            updated: r.updated,
-          }));
-          return jsonResult(filtered);
-        }
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
+    async ({ fullDetail, ...params }) => {
+      requireIdOrAppId(params);
+      const result = await reviews({ ...params, sort: params.sort && sort[params.sort] });
+      if (fullDetail) return jsonResult(result);
+      return jsonResult(
+        result.map(({ id, version, userName, score, title, text, updated }) => ({
+          id,
+          version,
+          userName,
+          score,
+          title,
+          text,
+          updated,
+        }))
+      );
     }
   );
 
-  // 9. apple_privacy
   server.registerTool(
     "apple_privacy",
     {
@@ -550,42 +259,20 @@ Note: Apple limits review pages to 1-10.`,
 
 Returns a PrivacyDetails object containing:
 - managePrivacyChoicesUrl: URL to manage privacy choices (or null)
+- privacyPolicyUrl: The developer's privacy policy link (or null)
 - privacyTypes: Array of privacy type objects, each with:
   - privacyType, identifier, description
   - dataCategories: Array of { dataCategory, identifier, dataTypes[] }
   - purposes: Array of purpose objects`,
       inputSchema: z.object({
-        id: z
-          .string()
-          .describe("Numeric App Store ID (e.g. '324684580')"),
-        country: z
-          .string()
-          .default("US")
-          .describe(
-            "Upper-case ISO country code (Apple requires uppercase, default: 'US')"
-          ),
+        id: z.string().describe("Numeric App Store ID (e.g. '324684580')"),
+        country,
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
-    async (params) => {
-      try {
-        const result = await privacy({
-          id: params.id,
-          country: params.country,
-        });
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
-    }
+    async (params) => jsonResult(await privacy(params))
   );
 
-  // 10. apple_version_history
   server.registerTool(
     "apple_version_history",
     {
@@ -598,33 +285,31 @@ Returns an array of VersionHistoryItem objects, each containing:
 - releaseDate: Human-readable release date
 - releaseTimestamp: ISO timestamp of the release`,
       inputSchema: z.object({
-        id: z
-          .string()
-          .describe("Numeric App Store ID (e.g. '324684580')"),
-        country: z
-          .string()
-          .default("US")
-          .describe(
-            "Upper-case ISO country code (Apple requires uppercase, default: 'US')"
-          ),
+        id: z.string().describe("Numeric App Store ID (e.g. '324684580')"),
+        country,
       }),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY,
     },
-    async (params) => {
-      try {
-        const result = await versionHistory({
-          id: params.id,
-          country: params.country,
-        });
-        return jsonResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
-    }
+    async (params) => jsonResult(await versionHistory(params))
+  );
+
+  server.registerTool(
+    "apple_in_app_purchases",
+    {
+      title: "Get Apple App In-App Purchases",
+      description: `List an Apple App Store app's top in-app purchases (up to 10, as shown on its App Store page), priced in the \`country\` storefront's currency.
+
+Returns an array (empty when the app has none) of:
+- id, productId: Apple's numeric id and the developer's product identifier
+- title, description
+- price (number), currency (ISO 4217), formattedPrice (e.g. "$9.99")
+- subscription (boolean), subscriptionPeriod (ISO 8601 duration such as "P1M", subscriptions only)`,
+      inputSchema: z.object({
+        id: z.string().describe("Numeric App Store ID (e.g. '570060128')"),
+        country,
+      }),
+      annotations: READ_ONLY,
+    },
+    async (params) => jsonResult(await inAppPurchases(params))
   );
 }
